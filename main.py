@@ -63,9 +63,11 @@ class Car():
         self.position = self.path[0].copy()
         self.speed = 0
         self.angle = np.arctan2(self.path[1][1] - self.path[0][1], self.path[1][0] - self.path[0][0])
-        self.length = 4.7  # meters
-        self.width = 1.9   # meters
+        self.length = 4.7
+        self.width = 1.9
         self.confidence = confidence
+
+        self.time_elapsed = 0.0
 
         self.place_in_queue()
 
@@ -125,6 +127,8 @@ class Car():
         return np.argmin(distances)
 
     def set_drive_controls(self):
+        self.time_elapsed += dt
+
         # Find the closest point on the path
         distances = [np.linalg.norm(point - self.position) for point in self.path]
         closest_point_index = np.argmin(distances)
@@ -196,24 +200,99 @@ class Car():
         self.enact_driver_controls(self.throttle, self.brake, turn)
 
 class QuickRun():
-    def __init__(self):
+    def __init__(self, timesteps=1000):
         self.road = Roundabout()
-        for _ in range(5):
+        self.timesteps = timesteps
+        self.times_elapsed = []
+        self.last_five_speeds = []
+
+        for _ in range(25):
             self.road.add_car()
+
         self.run_simulation()
-        
+    
     def run_simulation(self):
-        for _ in range(1000):
+        for _ in range(self.timesteps):
+
+            average_speed = np.mean([car.speed for car in self.road.cars]) if self.road.cars else 0
+            self.last_five_speeds.append(average_speed)
+            if len(self.last_five_speeds) > 5:
+                self.last_five_speeds = self.last_five_speeds[1:]
+                if max(self.last_five_speeds) == 0:
+                    print("All cars have stopped. Ending simulation.")
+                    return False, self.times_elapsed
+                
+            # Check for collisions
+            for i, car1 in enumerate(self.road.cars):
+                corners1 = self.get_corners(car1.position, car1.length, car1.width, car1.angle)
+                for j, car2 in enumerate(self.road.cars):
+                    if i >= j:
+                        continue
+                    corners2 = self.get_corners(car2.position, car2.length, car2.width, car2.angle)
+                    if self.rectangles_intersect(corners1, corners2):
+                        print(f"Collision detected between cars. Ending simulation at time {_ * dt}.")
+                        return False, self.times_elapsed
+
+
+            if len(self.road.cars) < 25:
+                self.road.add_car()
+
             for car in self.road.cars:
                 car.set_drive_controls()
                 car.update_position()
                 if np.linalg.norm(car.position - car.path[-1]) < 1.0:
+                    self.times_elapsed.append(car.time_elapsed)
                     self.road.cars.remove(car)
-        print(f"Simulation complete with {len(self.road.cars)} cars remaining.")
+        print(f"All times for cars: {self.times_elapsed}")
+        print(f"Simulation complete with average time elapsed: {np.mean(self.times_elapsed):.2f} seconds.")
+        return True, self.times_elapsed
+
+    def get_corners(self, pos, length, width, angle):
+        """Returns the 4 corners of a rotated rectangle centered at pos"""
+        dx = length / 2
+        dy = width / 2
+
+        # Rectangle in local space
+        corners = np.array([
+            [-dx, -dy],
+            [-dx,  dy],
+            [ dx,  dy],
+            [ dx, -dy]
+        ])
+
+        # Rotation matrix
+        rotation = np.array([
+            [np.cos(angle), -np.sin(angle)],
+            [np.sin(angle),  np.cos(angle)]
+        ])
+
+        return np.dot(corners, rotation.T) + pos
+    
+    def rectangles_intersect(self, rect1, rect2):
+        """Check if two rectangles (given by 4 corners) intersect using SAT"""
+        def get_axes(corners):
+            return [corners[i] - corners[i - 1] for i in range(4)]
+
+        def project(corners, axis):
+            projections = np.dot(corners, axis)
+            return [min(projections), max(projections)]
+
+        axes = get_axes(rect1) + get_axes(rect2)
+        axes = [axis / np.linalg.norm(axis) for axis in axes]
+
+        for axis in axes:
+            proj1 = project(rect1, axis)
+            proj2 = project(rect2, axis)
+            if proj1[1] < proj2[0] or proj2[1] < proj1[0]:
+                return False  # No overlap
+        return True  # Overlap found!
+
+
 
 class LivePlotter2d():
-    def __init__(self):
+    def __init__(self, timesteps=1000):
         self.road = Roundabout()
+        self.timesteps = timesteps
         self.show_ob_fields = True
         self.fig, self.ax = plt.subplots(figsize=(6, 6))
         self.ax.set_xlim(-33.3, 33.3)
@@ -371,7 +450,7 @@ class LivePlotter2d():
 
     def go(self):
         ani = animation.FuncAnimation(
-            self.fig, self.animate, frames=5000, init_func=self.init_animation,
+            self.fig, self.animate, frames=self.timesteps, init_func=self.init_animation,
             interval=dt * 1000, blit=True, repeat=False
         )
 
@@ -383,8 +462,9 @@ from matplotlib import animation
 import numpy as np
 
 class LivePlotter3d():
-    def __init__(self):
+    def __init__(self, timesteps=1000):
         self.road = Roundabout()
+        self.timesteps = timesteps
         self.show_ob_fields = False
         self.fig = plt.figure(figsize=(8, 8))
         self.ax = self.fig.add_subplot(111, projection='3d')
@@ -487,15 +567,15 @@ class LivePlotter3d():
 
     def go(self):
         ani = animation.FuncAnimation(
-            self.fig, self.animate, frames=5000,
+            self.fig, self.animate, frames=self.timesteps,
             init_func=self.init_animation, interval=dt * 1000,
             blit=False, repeat=False
         )
         plt.show()
 
 if __name__ == "__main__":
-    #quick_run = QuickRun()
-    #plotter_2d = LivePlotter2d()
+    quick_run = QuickRun(timesteps=2000)
+    #plotter_2d = LivePlotter2d(timesteps=2000)
     #plotter_2d.go()
-    #plotter_3d = LivePlotter3d()
+    #plotter_3d = LivePlotter3d(timesteps=500)
     #plotter_3d.go()
