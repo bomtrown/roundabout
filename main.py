@@ -9,10 +9,22 @@ import numpy as np
 import random
 import cv2
 
+# Simulation parameters
+dt = 1/30  
+speed_limit = 30 * 0.44704
+observation_modes = {
+    'queue': cv2.imread('kernel_queuing.png', cv2.IMREAD_GRAYSCALE)/255.0,
+    'merge': cv2.imread('kernel_merging.png', cv2.IMREAD_GRAYSCALE)/255.0,
+    'drive': cv2.imread('kernel_driving.png', cv2.IMREAD_GRAYSCALE)/255.0,
+    'test': cv2.imread('kernel_test.png', cv2.IMREAD_GRAYSCALE)/255.0,
+    'lane_change_left': cv2.imread('kernel_lane_change_left.png', cv2.IMREAD_GRAYSCALE)/255.0
+}
+
 class Roundabout():
     def __init__(self):
         self.routes = {}
         self.routes_om = {}
+        self.cars = []
         with open('routes.csv', newline='') as csvfile:
             reader = csv.DictReader(csvfile)
             for row in reader:
@@ -29,15 +41,25 @@ class Roundabout():
             self.routes[name] = np.array(self.routes[name])
             self.routes_om[name] = np.array(self.routes_om[name])
 
+    def add_car(self):
+        entrances = ['1', '2', '3', '4']
+        entrance = random.choice(entrances)
+        exits = [e for e in entrances if e != entrance]
+        exit = random.choice(exits)
+        confidence = random.uniform(0, 1)
+        car = Car(road=self, entrance=entrance, exit=exit, confidence=confidence)
+        self.cars.append(car)
+    
 class Car():
-    def __init__(self, entrance, exit, confidence=0.5):
+    def __init__(self, road, entrance, exit, confidence=0.5):
+        self.road = road
         self.entrance = entrance
         self.exit = exit
 
         self.observation_mode = observation_modes['drive']
         self.last_ob_mode = self.observation_mode.copy()
 
-        self.path = roundabout.routes[entrance + exit]
+        self.path = self.road.routes[entrance + exit]
         self.position = self.path[0].copy()
         self.speed = 0
         self.angle = np.arctan2(self.path[1][1] - self.path[0][1], self.path[1][0] - self.path[0][0])
@@ -71,9 +93,9 @@ class Car():
         return corners_global
 
     def place_in_queue(self):
-        if len(cars) == 0:
+        if len(self.road.cars) == 0:
             return
-        for car in cars:
+        for car in self.road.cars:
             if car is not self:
                 distance = np.linalg.norm(car.position - self.position)
                 if distance < 4.0:
@@ -102,13 +124,13 @@ class Car():
         distances = np.linalg.norm(self.path - self.position, axis=1)
         return np.argmin(distances)
 
-    def set_drive_controls(self, cars=None):
+    def set_drive_controls(self):
         # Find the closest point on the path
         distances = [np.linalg.norm(point - self.position) for point in self.path]
         closest_point_index = np.argmin(distances)
         self.closest_point = self.path[closest_point_index]
 
-        self.observation_mode = observation_modes[roundabout.routes_om[self.entrance + self.exit][closest_point_index]]
+        self.observation_mode = observation_modes[self.road.routes_om[self.entrance + self.exit][closest_point_index]]
 
         # Target point selection
         if distances[closest_point_index] > 4.0 and closest_point_index < len(self.path) - 1:
@@ -128,8 +150,8 @@ class Car():
             direction /= distance
 
         yield_factor = 0.0
-        if cars is not None:
-           for car in [car for car in cars if car is not self]:
+        if self.road.cars is not None:
+           for car in [car for car in self.road.cars if car is not self]:
                distance = np.linalg.norm(car.position - self.position)
                if distance < 30.0:
                    relative_position = np.array([
@@ -173,81 +195,45 @@ class Car():
         # Apply controls
         self.enact_driver_controls(self.throttle, self.brake, turn)
 
-if __name__ == "__main__":
-    dt = 1/30  # Time step for simulation in seconds
-    speed_limit = 30 * 0.44704
-    observation_modes = {
-        'queue': cv2.imread('kernel_queuing.png', cv2.IMREAD_GRAYSCALE)/255.0,
-        'merge': cv2.imread('kernel_merging.png', cv2.IMREAD_GRAYSCALE)/255.0,
-        'drive': cv2.imread('kernel_driving.png', cv2.IMREAD_GRAYSCALE)/255.0,
-        'test': cv2.imread('kernel_test.png', cv2.IMREAD_GRAYSCALE)/255.0,
-        'lane_change_left': cv2.imread('kernel_lane_change_left.png', cv2.IMREAD_GRAYSCALE)/255.0
-    }
-    show_ob_fields = True
+class QuickRun():
+    def __init__(self):
+        self.road = Roundabout()
+        for _ in range(5):
+            self.road.add_car()
+        self.run_simulation()
+        
+    def run_simulation(self):
+        for _ in range(1000):
+            for car in self.road.cars:
+                car.set_drive_controls()
+                car.update_position()
+                if np.linalg.norm(car.position - car.path[-1]) < 1.0:
+                    self.road.cars.remove(car)
+        print(f"Simulation complete with {len(self.road.cars)} cars remaining.")
 
-    roundabout = Roundabout()
-    cars = []
+class LivePlotter2d():
+    def __init__(self):
+        self.road = Roundabout()
+        self.show_ob_fields = True
+        self.fig, self.ax = plt.subplots(figsize=(6, 6))
+        self.ax.set_xlim(-33.3, 33.3)
+        self.ax.set_ylim(-33.3, 33.3)
+        self.ax.set_title("Live Car Simulation")
+        self.ax.set_xlabel("X Position")
+        self.ax.set_ylabel("Y Position")
+        self.ax.set_aspect('equal')
 
-    fig, ax = plt.subplots(figsize=(6, 6))
-    ax.set_xlim(-33.3, 33.3)
-    ax.set_ylim(-33.3, 33.3)
-    ax.set_title("Live Car Simulation")
-    ax.set_xlabel("X Position")
-    ax.set_ylabel("Y Position")
-    ax.set_aspect('equal')
+        img = mpimg.imread('Background.jpg')
+        self.ax.imshow(img, extent=[-33.3, 33.3, -33.3, 33.3], aspect='auto', zorder=0)
 
-    img = mpimg.imread('Background.jpg')
-    ax.imshow(img, extent=[-33.3, 33.3, -33.3, 33.3], aspect='auto', zorder=0)
+        self.car_patches = []
+        self.ob_field_patches = []
 
-    car_patches = []
-    ob_field_patches = []
-
-    def add_car():
-        entrances = ['1', '2', '3', '4']
-        entrance = random.choice(entrances)
-        exits = [e for e in entrances if e != entrance]
-        exit = random.choice(exits)
-        confidence = random.uniform(0, 1)
-        car = Car(entrance=entrance, exit=exit, confidence=confidence)
-        cars.append(car)
-        car_patch = plt.Polygon(car.get_corners(), closed=True, color='w', alpha=0.4)
-        ax.add_patch(car_patch)
-        car_patches.append(car_patch)
-
-        if show_ob_fields:
-            patches = []
-            ob = car.observation_mode
-            grid_size = 3.0
-            offset = -10 * grid_size
-            for i in range(21):
-                for j in range(21):
-                    val = ob[-1-j, -1-i]
-                    if val == 0:
-                        continue
-                    x = offset + j * grid_size
-                    y = offset + i * grid_size
-                    dx = x * np.cos(car.angle) - y * np.sin(car.angle)
-                    dy = x * np.sin(car.angle) + y * np.cos(car.angle)
-                    world_x = car.position[0] + dx
-                    world_y = car.position[1] + dy
-                    rect = Rectangle(
-                        (world_x - grid_size/2, world_y - grid_size/2),
-                        grid_size, grid_size,
-                        color='white', alpha=val * 0.5, zorder=2
-                    )
-                    t = transforms.Affine2D().rotate_around(world_x, world_y, car.angle)
-                    rect.set_transform(t + ax.transData)
-                    ax.add_patch(rect)
-                    patches.append(rect)
-            ob_field_patches.append(patches)
-
-    add_car()
-
-    def init():
-        for i, car in enumerate(cars):
-            car_patches[i].set_xy(car.get_corners())
-            if show_ob_fields:
-                patches = ob_field_patches[i]
+    def init_animation(self):
+        for i, car in enumerate(self.road.cars):
+            self.car_patches[i].set_xy(car.get_corners())
+            if self.show_ob_fields:
+                patches = self.ob_field_patches[i]
                 ob = car.observation_mode
                 grid_size = 3.0
                 offset = -10 * grid_size
@@ -269,40 +255,41 @@ if __name__ == "__main__":
                                 grid_size, grid_size,
                                 color='white', alpha=val * 0.5, zorder=2
                             )
-                            ax.add_patch(rect)
+                            self.ax.add_patch(rect)
                             patches.append(rect)
                         else:
                             rect = patches[k]
                             rect.set_xy((world_x - grid_size/2, world_y - grid_size/2))
                             rect.set_alpha(val * 0.5)
                         t = transforms.Affine2D().rotate_around(world_x, world_y, car.angle)
-                        rect.set_transform(t + ax.transData)
+                        rect.set_transform(t + self.ax.transData)
                         k += 1
-        return car_patches + sum(ob_field_patches, []) if show_ob_fields else car_patches
-
-    def animate(frame):
-        if len(cars) < 25:
-            add_car()
+        return self.car_patches + sum(self.ob_field_patches, []) if self.show_ob_fields else self.car_patches
+    
+    def animate(self, frame):
+        if len(self.road.cars) < 25:
+            self.road.add_car()
+            self._make_car_patch(self.road.cars[-1])
         to_remove = []
-        for i, car in enumerate(cars):
-            car.set_drive_controls(cars=cars)
+        for i, car in enumerate(self.road.cars):
+            car.set_drive_controls()
             car.update_position()
-            car_patches[i].set_xy(car.get_corners())
-            car_patches[i].set_color((
+            self.car_patches[i].set_xy(car.get_corners())
+            self.car_patches[i].set_color((
                 np.clip(1 - car.throttle, 0, 1),
                 np.clip(1 - car.brake, 0, 1),
                 np.clip(1 - car.brake - car.throttle, 0, 1)
             ))
 
-            if show_ob_fields:
+            if self.show_ob_fields:
                 # Check if observation mode has changed (add a new attribute to track last one)
                 if not hasattr(car, 'last_ob_mode') or not np.array_equal(car.observation_mode, car.last_ob_mode):
                     # Remove old patches
-                    for p in ob_field_patches[i]:
+                    for p in self.ob_field_patches[i]:
                         p.remove()
-                    ob_field_patches[i] = []
+                    self.ob_field_patches[i] = []
 
-                patches = ob_field_patches[i]
+                patches = self.ob_field_patches[i]
                 ob = car.observation_mode
                 grid_size = 3.0
                 offset = -10 * grid_size
@@ -325,14 +312,14 @@ if __name__ == "__main__":
                                 color='white', alpha=val * 0.5, zorder=2
                             )
                             rect.set_edgecolor(None)
-                            ax.add_patch(rect)
+                            self.ax.add_patch(rect)
                             patches.append(rect)
                         else:
                             rect = patches[k]
                             rect.set_xy((world_x - grid_size/2, world_y - grid_size/2))
                             rect.set_alpha(np.clip((val-0.5) * 0.5,0,1))
                         t = transforms.Affine2D().rotate_around(world_x, world_y, car.angle)
-                        rect.set_transform(t + ax.transData)
+                        rect.set_transform(t + self.ax.transData)
                         k += 1
                 car.last_ob_mode = car.observation_mode.copy()
 
@@ -340,19 +327,175 @@ if __name__ == "__main__":
                 to_remove.append(i)
 
         for idx in sorted(to_remove, reverse=True):
-            car_patches[idx].remove()
-            del car_patches[idx]
-            del cars[idx]
-            if show_ob_fields:
-                for p in ob_field_patches[idx]:
+            self.car_patches[idx].remove()
+            del self.car_patches[idx]
+            del self.road.cars[idx]
+            if self.show_ob_fields:
+                for p in self.ob_field_patches[idx]:
                     p.remove()
-                del ob_field_patches[idx]
+                del self.ob_field_patches[idx]
 
-        return car_patches + sum(ob_field_patches, []) if show_ob_fields else car_patches
+        return self.car_patches + sum(self.ob_field_patches, []) if self.show_ob_fields else self.car_patches
 
-    ani = animation.FuncAnimation(
-        fig, animate, frames=5000, init_func=init,
-        interval=dt * 1000, blit=True, repeat=False
-    )
+    def _make_car_patch(self, car):
+        car_patch = plt.Polygon(car.get_corners(), closed=True, color='w', alpha=0.4)
+        self.ax.add_patch(car_patch)
+        self.car_patches.append(car_patch)
 
-    plt.show()
+        if self.show_ob_fields:
+            patches = []
+            ob = car.observation_mode
+            grid_size = 3.0
+            offset = -10 * grid_size
+            for i in range(21):
+                for j in range(21):
+                    val = ob[-1-j, -1-i]
+                    if val == 0:
+                        continue
+                    x = offset + j * grid_size
+                    y = offset + i * grid_size
+                    dx = x * np.cos(car.angle) - y * np.sin(car.angle)
+                    dy = x * np.sin(car.angle) + y * np.cos(car.angle)
+                    world_x = car.position[0] + dx
+                    world_y = car.position[1] + dy
+                    rect = Rectangle(
+                        (world_x - grid_size/2, world_y - grid_size/2),
+                        grid_size, grid_size,
+                        color='white', alpha=val * 0.5, zorder=2
+                    )
+                    t = transforms.Affine2D().rotate_around(world_x, world_y, car.angle)
+                    rect.set_transform(t + self.ax.transData)
+                    self.ax.add_patch(rect)
+                    patches.append(rect)
+            self.ob_field_patches.append(patches)
+
+    def go(self):
+        ani = animation.FuncAnimation(
+            self.fig, self.animate, frames=5000, init_func=self.init_animation,
+            interval=dt * 1000, blit=True, repeat=False
+        )
+
+        plt.show()
+
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+import matplotlib.pyplot as plt
+from matplotlib import animation
+import numpy as np
+
+class LivePlotter3d():
+    def __init__(self):
+        self.road = Roundabout()
+        self.show_ob_fields = False
+        self.fig = plt.figure(figsize=(8, 8))
+        self.ax = self.fig.add_subplot(111, projection='3d')
+        self.ax.set_xlim(-33.3, 33.3)
+        self.ax.set_ylim(-33.3, 33.3)
+        self.ax.set_zlim(0, 20)
+        self.ax.set_title("Live Car Simulation 3D")
+        self.ax.set_xlabel("X")
+        self.ax.set_ylabel("Y")
+        self.ax.set_zlabel("Z")
+
+        self.car_patches = []
+        self.ob_field_patches = []
+
+    def add_car_patch(self, car):
+        patch = self._make_car_patch(car)
+        self.car_patches.append(patch)
+
+        if self.show_ob_fields:
+            ob_patches = self._make_ob_field_patches(car)
+            self.ob_field_patches.append(ob_patches)
+        else:
+            self.ob_field_patches.append([])
+
+    def _make_car_patch(self, car):
+        corners = car.get_corners()  # shape (4,2)
+        verts = [[(x, y, 0.5) for x, y in corners]]  # Z = 0.5 height
+        poly = Poly3DCollection(verts, facecolors='black', linewidths=0.5, alpha=0.4)
+        self.ax.add_collection3d(poly)
+        return poly
+
+    def _make_ob_field_patches(self, car):
+        patches = []
+        ob = car.observation_mode
+        grid_size = 3.0
+        offset = -10 * grid_size
+        for i in range(21):
+            for j in range(21):
+                val = ob[-1-j, -1-i]
+                if val <= 0.5:
+                    continue
+                x = offset + i * grid_size
+                y = offset + j * grid_size
+                dx = x * np.cos(car.angle) - y * np.sin(car.angle)
+                dy = x * np.sin(car.angle) + y * np.cos(car.angle)
+                world_x = car.position[0] + dx
+                world_y = car.position[1] + dy
+                z = 1.0  # hover above car
+                square = [
+                    (world_x - grid_size/2, world_y - grid_size/2, z),
+                    (world_x + grid_size/2, world_y - grid_size/2, z),
+                    (world_x + grid_size/2, world_y + grid_size/2, z),
+                    (world_x - grid_size/2, world_y + grid_size/2, z)
+                ]
+                poly = Poly3DCollection([square], color='black', alpha=np.clip((val - 0.5) * 0.5, 0, 1))
+                self.ax.add_collection3d(poly)
+                patches.append(poly)
+        return patches
+
+    def init_animation(self):
+        self.car_patches.clear()
+        self.ob_field_patches.clear()
+
+        for car in self.road.cars:
+            self.car_patches.append(self._make_car_patch(car))
+            self.ob_field_patches.append(self._make_ob_field_patches(car) if self.show_ob_fields else [])
+        return self.car_patches + sum(self.ob_field_patches, [])
+
+    def animate(self, frame):
+        if len(self.road.cars) < 25:
+            self.road.add_car()
+            self.add_car_patch(self.road.cars[-1])
+        to_remove = []
+
+        for i, car in enumerate(self.road.cars):
+            car.set_drive_controls()
+            car.update_position()
+            corners = car.get_corners()
+            verts = [[(x, y, 0.5) for x, y in corners]]
+            self.car_patches[i].set_verts(verts)
+
+            if self.show_ob_fields:
+                for p in self.ob_field_patches[i]:
+                    p.remove()
+                self.ob_field_patches[i] = self._make_ob_field_patches(car)
+
+            if np.linalg.norm(car.position - car.path[-1]) < 1.0:
+                to_remove.append(i)
+
+        for idx in sorted(to_remove, reverse=True):
+            self.car_patches[idx].remove()
+            del self.car_patches[idx]
+            del self.road.cars[idx]
+            if self.show_ob_fields:
+                for p in self.ob_field_patches[idx]:
+                    p.remove()
+                del self.ob_field_patches[idx]
+
+        return self.car_patches + sum(self.ob_field_patches, [])
+
+    def go(self):
+        ani = animation.FuncAnimation(
+            self.fig, self.animate, frames=5000,
+            init_func=self.init_animation, interval=dt * 1000,
+            blit=False, repeat=False
+        )
+        plt.show()
+
+if __name__ == "__main__":
+    #quick_run = QuickRun()
+    #plotter_2d = LivePlotter2d()
+    #plotter_2d.go()
+    #plotter_3d = LivePlotter3d()
+    #plotter_3d.go()
